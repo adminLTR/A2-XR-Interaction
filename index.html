@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MAC0623 — A1 Desktop Docking Testbed (Starter)</title>
+  <!-- Cache-bust: python -m http.server does not send no-cache headers, so
+       the browser would otherwise keep serving stale CSS/JS (HTTP 304). -->
+  <script>
+    document.write('<link rel="stylesheet" href="./lab10.css?t=' + Date.now() + '">');
+  </script>
+</head>
+<body>
+
+  <!-- ============================================================
+       HUD — provided. Add fields here only if your mapping needs
+       a new on-screen control; don't remove the existing ones,
+       main.js wires up event listeners against these exact IDs.
+       ============================================================ -->
+  <div id="hud">
+    <label>Participant <input id="participantId" value="P01" size="4" /></label>
+    <label>Mapping
+      <select id="mappingSelect">
+        <option value="1">1 — baseline (mode-switched)</option>
+        <option value="2">2 — your own</option>
+      </select>
+    </label>
+    <span id="trialCount">Trial 1</span>
+    <button id="confirmBtn">Confirm (Enter)</button>
+    <button id="downloadBtn">Download CSV</button>
+    <span id="status">—</span>
+  </div>
+
+  <div id="help">
+    Confirm logs your current error and starts the next trial — it does not
+    require being in tolerance first. The status pill turns green as a hint,
+    not a gate. See README.md and the STUDENT TODO comments in main.js.
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import("./main.js?t=" + Date.now());
+  </script>
+</body>
+</html>

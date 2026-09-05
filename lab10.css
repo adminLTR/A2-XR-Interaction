@@ -1,0 +1,107 @@
+/* ============================================================
+   MAC0623 — Class 10: WebXR Retrofit of A1 — styles
+   ============================================================
+   Provided, identical in structure to the A1 starter's a1.css.
+   Covers the fixed HUD bar (top), the help caption (bottom-left),
+   and the full-bleed canvas/VR-entry button. You don't need to
+   touch this file for today's retrofit; only extend it if your
+   WebXR code adds new HUD elements, and keep the existing
+   selectors (#hud, #status, etc.) intact — main.js reads them by
+   those exact IDs.
+   ============================================================ */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #111;
+}
+
+/* ---- HUD bar (top): participant ID, mapping select, trial
+   counter, confirm/download buttons, live status pill ---- */
+
+#hud {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 14px;
+  background: rgba(15, 15, 15, 0.88);
+  color: #eee;
+  font-size: 13px;
+  z-index: 10;
+  border-bottom: 1px solid #333;
+}
+
+#hud label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+#hud input, #hud select {
+  font-size: 13px;
+  background: #222;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+#hud button {
+  font-size: 13px;
+  padding: 4px 12px;
+  cursor: pointer;
+  background: #2a5;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+}
+
+#hud button:hover { background: #3c6; }
+
+#downloadBtn { background: #457; }
+#downloadBtn:hover { background: #568; }
+
+/* Live delta-position / delta-orientation readout, same as A1. Turns
+   green when both are within tolerance — a hint, not a gate. */
+#status {
+  margin-left: auto;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 3px;
+  background: #333;
+}
+
+#status.in-tolerance { background: #274; color: #9f9; }
+#status.in-vr { background: #274; color: #9f9; }
+
+/* ---- Help caption (bottom-left) ---- */
+
+#help {
+  position: fixed;
+  bottom: 8px; left: 14px;
+  color: #888;
+  font-size: 12px;
+  z-index: 10;
+  max-width: 480px;
+  line-height: 1.4;
+}
+
+#help code {
+  background: #222;
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+/* ---- three.js canvas ---- */
+
+canvas { display: block; }
+
+/* ---- VRButton (injected by three.js at runtime, once the retrofit adds
+   it) ---- three.js's VRButton.createButton() ships its own inline
+   styles, so this is only a light touch-up to keep it visually
+   consistent with the HUD. */
+
+#VRButton {
+  font-family: system-ui, -apple-system, sans-serif !important;
+}

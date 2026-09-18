@@ -832,6 +832,8 @@ function setupController(index, color) {
   xrRig.add(controller);
   controller.addEventListener("selectstart", onGrabStart);
   controller.addEventListener("selectend", onGrabEnd);
+  // Grip (squeeze) = Confirm trial — DOM #confirmBtn is not visible in immersive-vr.
+  controller.addEventListener("squeezestart", onSqueezeConfirm);
   xrControllers.push(controller);
 
   const grip = renderer.xr.getControllerGrip(index);
@@ -910,6 +912,11 @@ function onGrabStart(event) {
 function onGrabEnd(event) {
   releaseVrGrab(event.target);
   releaseGizmoDrag(event.target);
+}
+
+function onSqueezeConfirm() {
+  if (!renderer.xr.isPresenting) return;
+  confirmTrial();
 }
 
 function buildControllerRay(color) {

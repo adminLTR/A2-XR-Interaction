@@ -23,7 +23,7 @@ import { VRButton } from "three/addons/webxr/VRButton.js";
 // still declared inline where they're first used.
 // ---------------------------------------------------------------------------
 
-let scene, camera, renderer, cube, target, xrRig;
+let scene, camera, renderer, cube, target, xrRig, xrControllers;
 
 /**
  * buildScene()
@@ -289,11 +289,21 @@ function isVrGrabMapping() {
   return currentMapping() === "vr-grab";
 }
 
+function isVrTrackballMapping() {
+  return currentMapping() === "vr-trackball";
+}
+
+function isVrGizmoMapping() {
+  return currentMapping() === "vr-gizmo";
+}
+
 function startTrial() {
   trialStartTime = performance.now();
   pathLength = 0;
   lastCubePosition.copy(getCubeWorldPose().position);
   modeSwitches = 0;
+  lastTrackballMode = null;
+  lastGizmoHandle = null;
   generateTargetPose();
   trialCountEl.textContent = `Trial ${trialNumber + 1}`;
 }
@@ -475,6 +485,7 @@ document.addEventListener("keyup", (e) => {
 mappingSelect.addEventListener("change", () => {
   keysDown.clear();
   releaseVrGrab();
+  releaseGizmoDrag();
 });
 
 window.addEventListener("wheel", (e) => {
@@ -566,42 +577,253 @@ function updateControlMapping(delta) {
 // the cube, not on top of it. Change XR_SPAWN_Z to move closer/farther.
 const XR_SPAWN_Z = 1.2;
 
-// Direct grab (vr-grab): keep the cube parented to the scene so rotation
-// is about the cube's own origin. attach() would orbit it around the
-// controller tip instead.
+// VR trackball rotation gain: controller delta is scaled by this before
+// being applied to the cube. Wrist twists in VR are larger and noisier than
+// a desktop mouse drag on a virtual sphere, so gain < 1 avoids 1:1 overshoot
+// while still feeling coupled to the hand. 0.6 ≈ a comfortable docking
+// rotation from a modest wrist turn; document this in the A2 report.
+const TRACKBALL_ROTATION_GAIN = 0.6;
+
+// vr-grab: translate + rotate 1:1 about the cube origin (mode "full").
+// vr-trackball: pose locked at selectstart — ray-on-cube = translate only,
+// ray-in-air = rotate only (gain). attach() would orbit around the controller.
 let vrGrabController = null;
+let vrGrabMode = null; // "full" | "translate" | "rotate"
+let lastTrackballMode = null;
 const vrGrabPrevPos = new THREE.Vector3();
 const vrGrabPrevQuat = new THREE.Quaternion();
 const _vrGrabPos = new THREE.Vector3();
 const _vrGrabQuat = new THREE.Quaternion();
 const _vrGrabDeltaPos = new THREE.Vector3();
 const _vrGrabDeltaQuat = new THREE.Quaternion();
+const _vrGrabIdentityQuat = new THREE.Quaternion();
+const _vrGrabScaledQuat = new THREE.Quaternion();
 
 function captureVrGrabPose(controller) {
   controller.getWorldPosition(vrGrabPrevPos);
   controller.getWorldQuaternion(vrGrabPrevQuat);
 }
 
+function beginVrManipulation(controller, mode) {
+  if (vrGrabController && vrGrabController !== controller) {
+    vrGrabController.userData.selected = null;
+  }
+  vrGrabController = controller;
+  vrGrabMode = mode;
+  controller.userData.selected = cube;
+  captureVrGrabPose(controller);
+}
+
 function releaseVrGrab(controller) {
   if (controller && vrGrabController !== controller) return;
   if (vrGrabController) vrGrabController.userData.selected = null;
   vrGrabController = null;
+  vrGrabMode = null;
 }
 
 function updateVrGrab() {
-  if (!isVrGrabMapping() || !vrGrabController) return;
+  if (!vrGrabController || !vrGrabMode) return;
+  if (!isVrGrabMapping() && !isVrTrackballMapping()) return;
 
   vrGrabController.getWorldPosition(_vrGrabPos);
   vrGrabController.getWorldQuaternion(_vrGrabQuat);
 
-  cube.position.add(_vrGrabDeltaPos.subVectors(_vrGrabPos, vrGrabPrevPos));
-
-  // World-space controller rotation delta, applied at the cube origin.
   _vrGrabDeltaQuat.copy(vrGrabPrevQuat).invert().premultiply(_vrGrabQuat);
-  cube.quaternion.premultiply(_vrGrabDeltaQuat);
+
+  if (vrGrabMode === "full" || vrGrabMode === "translate") {
+    cube.position.add(_vrGrabDeltaPos.subVectors(_vrGrabPos, vrGrabPrevPos));
+  }
+
+  if (vrGrabMode === "full") {
+    cube.quaternion.premultiply(_vrGrabDeltaQuat);
+  } else if (vrGrabMode === "rotate") {
+    _vrGrabScaledQuat.slerpQuaternions(
+      _vrGrabIdentityQuat,
+      _vrGrabDeltaQuat,
+      TRACKBALL_ROTATION_GAIN
+    );
+    cube.quaternion.premultiply(_vrGrabScaledQuat);
+  }
 
   vrGrabPrevPos.copy(_vrGrabPos);
   vrGrabPrevQuat.copy(_vrGrabQuat);
+}
+
+const GIZMO_AXIS_COLORS = [0xff3344, 0x33cc55, 0x3388ff];
+
+let gizmo = null;
+let gizmoHandles = [];
+let gizmoDrag = null;
+let lastGizmoHandle = null;
+const _gizmoAxis = new THREE.Vector3();
+const _gizmoFrom = new THREE.Vector3();
+const _gizmoTo = new THREE.Vector3();
+const _gizmoCross = new THREE.Vector3();
+const _gizmoDelta = new THREE.Vector3();
+const _gizmoCtrlPos = new THREE.Vector3();
+
+function gizmoHandleId(mesh) {
+  return mesh.userData.kind + ":" + mesh.userData.axis;
+}
+
+function tagGizmoHandle(mesh, kind, axis) {
+  mesh.userData.kind = kind;
+  mesh.userData.axis = axis;
+  gizmoHandles.push(mesh);
+}
+
+function cubeWorldAxis(axisIndex, target) {
+  target.set(axisIndex === 0 ? 1 : 0, axisIndex === 1 ? 1 : 0, axisIndex === 2 ? 1 : 0);
+  target.applyQuaternion(cube.quaternion);
+  return target.normalize();
+}
+
+function highlightGizmo(handleId) {
+  for (const mesh of gizmoHandles) {
+    if (!mesh.material || !mesh.material.emissive) continue;
+    mesh.material.emissive.setHex(gizmoHandleId(mesh) === handleId ? 0x666666 : 0x000000);
+  }
+}
+
+function buildGizmo() {
+  gizmo = new THREE.Group();
+  gizmo.name = "gizmo";
+  gizmoHandles = [];
+
+  for (let axis = 0; axis < 3; axis++) {
+    const color = GIZMO_AXIS_COLORS[axis];
+
+    const arrow = new THREE.Group();
+    const shaftMat = new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.45 });
+    const headMat = shaftMat.clone();
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.26, 10), shaftMat);
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.09, 12), headMat);
+    const start = 0.22;
+    shaft.position.y = start + 0.13;
+    head.position.y = start + 0.26 + 0.045;
+    tagGizmoHandle(shaft, "translate", axis);
+    tagGizmoHandle(head, "translate", axis);
+    arrow.add(shaft, head);
+    if (axis === 0) arrow.rotation.z = -Math.PI / 2;
+    if (axis === 2) arrow.rotation.x = Math.PI / 2;
+    gizmo.add(arrow);
+
+    const ringMat = new THREE.MeshStandardMaterial({
+      color,
+      metalness: 0.15,
+      roughness: 0.45,
+      side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.018, 10, 48), ringMat);
+    if (axis === 0) ring.rotation.y = Math.PI / 2;
+    if (axis === 1) ring.rotation.x = Math.PI / 2;
+    tagGizmoHandle(ring, "rotate", axis);
+    gizmo.add(ring);
+
+    const planeMat = new THREE.MeshStandardMaterial({
+      color,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), planeMat);
+    const offset = 0.14;
+    if (axis === 0) {
+      plane.rotation.y = Math.PI / 2;
+      plane.position.set(0, offset, offset);
+    } else if (axis === 1) {
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(offset, 0, offset);
+    } else {
+      plane.position.set(offset, offset, 0);
+    }
+    tagGizmoHandle(plane, "plane", axis);
+    gizmo.add(plane);
+  }
+
+  gizmo.visible = false;
+  scene.add(gizmo);
+}
+
+function pickGizmoHandle(controller) {
+  if (!gizmo || !gizmo.visible) return null;
+  const hits = getIntersections(controller, [gizmo], true);
+  for (const hit of hits) {
+    if (hit.object.userData.kind) return hit.object;
+  }
+  return null;
+}
+
+function beginGizmoDrag(controller, handle) {
+  const id = gizmoHandleId(handle);
+  if (lastGizmoHandle && lastGizmoHandle !== id) modeSwitches++;
+  lastGizmoHandle = id;
+
+  cubeWorldAxis(handle.userData.axis, _gizmoAxis);
+  controller.getWorldPosition(_gizmoCtrlPos);
+  gizmoDrag = {
+    controller,
+    kind: handle.userData.kind,
+    axis: handle.userData.axis,
+    axisWorld: _gizmoAxis.clone(),
+    prevPos: _gizmoCtrlPos.clone(),
+  };
+  controller.userData.selected = handle;
+  highlightGizmo(id);
+}
+
+function releaseGizmoDrag(controller) {
+  if (controller && gizmoDrag && gizmoDrag.controller !== controller) return;
+  if (gizmoDrag && gizmoDrag.controller) gizmoDrag.controller.userData.selected = null;
+  gizmoDrag = null;
+  if (isVrGizmoMapping()) highlightGizmo(null);
+}
+
+function updateGizmoPose() {
+  if (!gizmo) return;
+  const show = isVrGizmoMapping();
+  gizmo.visible = show;
+  if (!show) return;
+  gizmo.position.copy(cube.position);
+  gizmo.quaternion.copy(cube.quaternion);
+}
+
+function updateGizmoDrag() {
+  if (!isVrGizmoMapping() || !gizmoDrag) return;
+
+  const { controller, kind, axisWorld, prevPos } = gizmoDrag;
+  controller.getWorldPosition(_gizmoCtrlPos);
+  _gizmoDelta.subVectors(_gizmoCtrlPos, prevPos);
+
+  if (kind === "translate") {
+    cube.position.addScaledVector(axisWorld, _gizmoDelta.dot(axisWorld));
+  } else if (kind === "plane") {
+    _gizmoDelta.projectOnPlane(axisWorld);
+    cube.position.add(_gizmoDelta);
+  } else if (kind === "rotate") {
+    _gizmoFrom.subVectors(prevPos, cube.position).projectOnPlane(axisWorld);
+    _gizmoTo.subVectors(_gizmoCtrlPos, cube.position).projectOnPlane(axisWorld);
+    if (_gizmoFrom.lengthSq() > 1e-8 && _gizmoTo.lengthSq() > 1e-8) {
+      const angle = Math.atan2(
+        _gizmoCross.crossVectors(_gizmoFrom, _gizmoTo).dot(axisWorld),
+        _gizmoFrom.dot(_gizmoTo)
+      );
+      cube.rotateOnWorldAxis(axisWorld, angle);
+    }
+  }
+
+  prevPos.copy(_gizmoCtrlPos);
+}
+
+function updateGizmoHover() {
+  if (!isVrGizmoMapping() || gizmoDrag || !xrControllers) return;
+  let hovered = null;
+  for (const controller of xrControllers) {
+    hovered = pickGizmoHandle(controller);
+    if (hovered) break;
+  }
+  highlightGizmo(hovered ? gizmoHandleId(hovered) : null);
 }
 
 function setupController(index, color) {
@@ -610,6 +832,7 @@ function setupController(index, color) {
   xrRig.add(controller);
   controller.addEventListener("selectstart", onGrabStart);
   controller.addEventListener("selectend", onGrabEnd);
+  xrControllers.push(controller);
 
   const grip = renderer.xr.getControllerGrip(index);
   const marker = new THREE.Mesh(
@@ -630,6 +853,8 @@ function setupWebXR() {
   xrRig.name = "xrRig";
   scene.add(xrRig);
   xrRig.add(camera);
+  xrControllers = [];
+  buildGizmo();
 
   // 0 = red (left in most Quest profiles), 1 = blue.
   const controller0 = setupController(0, 0xff6666);
@@ -646,6 +871,7 @@ function setupWebXR() {
     camera.lookAt(0, 0.5, 0);
     if (cube.parent !== scene) scene.attach(cube);
     releaseVrGrab();
+    releaseGizmoDrag();
     controller0.userData.selected = null;
     controller1.userData.selected = null;
     isDragging = false;
@@ -657,20 +883,33 @@ function setupWebXR() {
 }
 
 function onGrabStart(event) {
-  if (!isVrGrabMapping()) return;
   const controller = event.target;
   const hits = getIntersections(controller, [cube]);
-  if (hits.length === 0) return;
-  if (vrGrabController && vrGrabController !== controller) {
-    vrGrabController.userData.selected = null;
+
+  if (isVrGrabMapping()) {
+    if (hits.length === 0) return;
+    beginVrManipulation(controller, "full");
+    return;
   }
-  vrGrabController = controller;
-  controller.userData.selected = cube;
-  captureVrGrabPose(controller);
+
+  if (isVrTrackballMapping()) {
+    const mode = hits.length > 0 ? "translate" : "rotate";
+    if (lastTrackballMode && lastTrackballMode !== mode) modeSwitches++;
+    lastTrackballMode = mode;
+    beginVrManipulation(controller, mode);
+    return;
+  }
+
+  if (isVrGizmoMapping()) {
+    const handle = pickGizmoHandle(controller);
+    if (!handle) return;
+    beginGizmoDrag(controller, handle);
+  }
 }
 
 function onGrabEnd(event) {
   releaseVrGrab(event.target);
+  releaseGizmoDrag(event.target);
 }
 
 function buildControllerRay(color) {
@@ -687,7 +926,7 @@ function buildControllerRay(color) {
   return line;
 }
 
-function getIntersections(controller, objects) {
+function getIntersections(controller, objects, recursive = false) {
   const tempMatrix = new THREE.Matrix4();
   tempMatrix.identity().extractRotation(controller.matrixWorld);
 
@@ -695,7 +934,7 @@ function getIntersections(controller, objects) {
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
 
-  return raycaster.intersectObjects(objects, false);
+  return raycaster.intersectObjects(objects, recursive);
 }
 
 // ===== END STUDENT TODO ================================================
@@ -711,6 +950,9 @@ function animate() {
 
   updateControlMapping(delta);
   updateVrGrab();
+  updateGizmoDrag();
+  updateGizmoPose();
+  updateGizmoHover();
 
   // Generic path-length accumulation — measures how far the cube has
   // physically travelled this trial, regardless of mapping. World space

@@ -234,6 +234,8 @@ const trialCountEl = document.getElementById("trialCount");
 const confirmBtn = document.getElementById("confirmBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const statusEl = document.getElementById("status");
+const liveErrorsEl = document.getElementById("liveErrors");
+let vrStatusHud = null;
 
 // ---------------------------------------------------------------------------
 // Trial state machine — provided
@@ -389,8 +391,56 @@ function handleDownloadClick() {
 
 function updateStatus() {
   const { positionError, orientationErrorDeg, withinTolerance } = checkTolerance();
-  statusEl.textContent = `dPos ${positionError.toFixed(3)} | dRot ${orientationErrorDeg.toFixed(1)}deg`;
+  const text =
+    `dPos ${positionError.toFixed(3)} | dRot ${orientationErrorDeg.toFixed(1)}deg`;
+
+  statusEl.textContent = text;
   statusEl.classList.toggle("in-tolerance", withinTolerance);
+
+  if (liveErrorsEl) {
+    liveErrorsEl.textContent = text;
+    liveErrorsEl.classList.toggle("in-tolerance", withinTolerance);
+    liveErrorsEl.style.display = renderer && renderer.xr.isPresenting ? "none" : "";
+  }
+
+  updateVrStatusHud(text, withinTolerance);
+}
+
+function buildVrStatusHud() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 72;
+  const ctx = canvas.getContext("2d");
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.name = "vrStatusHud";
+  sprite.scale.set(0.38, 0.054, 1);
+  sprite.position.set(0, 0.38, -0.72);
+  sprite.visible = false;
+  camera.add(sprite);
+  vrStatusHud = { canvas, ctx, texture, sprite };
+}
+
+function updateVrStatusHud(text, withinTolerance) {
+  if (!vrStatusHud) return;
+  const { canvas, ctx, texture, sprite } = vrStatusHud;
+  const inSession = renderer.xr.isPresenting;
+  sprite.visible = inSession;
+  if (!inSession) return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = withinTolerance ? "rgba(30,70,40,0.9)" : "rgba(20,20,26,0.88)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "600 32px system-ui, sans-serif";
+  ctx.fillStyle = withinTolerance ? "#9f9" : "#eee";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 14, canvas.height / 2);
+  texture.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +626,34 @@ function updateControlMapping(delta) {
 // controller to this rig and slide the rig back so you stand in front of
 // the cube, not on top of it. Change XR_SPAWN_Z to move closer/farther.
 const XR_SPAWN_Z = 1.2;
+
+// Exit immersive session: left-controller X (Quest / Focus / emulator Quest profile).
+// WebXR xr-standard gamepad: button 4 on the left hand is typically X.
+const XR_EXIT_BUTTON_INDEX = 4;
+let xrExitButtonWasDown = false;
+
+function isLeftControllerXDown(session) {
+  for (const source of session.inputSources) {
+    if (source.handedness !== "left") continue;
+    const gp = source.gamepad;
+    if (!gp || gp.buttons.length <= XR_EXIT_BUTTON_INDEX) continue;
+    if (gp.buttons[XR_EXIT_BUTTON_INDEX].pressed) return true;
+  }
+  return false;
+}
+
+function updateVrExitButton() {
+  if (!renderer.xr.isPresenting) {
+    xrExitButtonWasDown = false;
+    return;
+  }
+  const session = renderer.xr.getSession();
+  if (!session) return;
+
+  const xDown = isLeftControllerXDown(session);
+  if (xDown && !xrExitButtonWasDown) session.end();
+  xrExitButtonWasDown = xDown;
+}
 
 // VR trackball rotation gain: controller delta is scaled by this before
 // being applied to the cube. Wrist twists in VR are larger and noisier than
@@ -857,6 +935,7 @@ function setupWebXR() {
   xrRig.add(camera);
   xrControllers = [];
   buildGizmo();
+  buildVrStatusHud();
 
   // 0 = red (left in most Quest profiles), 1 = blue.
   const controller0 = setupController(0, 0xff6666);
@@ -881,6 +960,7 @@ function setupWebXR() {
     dy = 0;
     dz = 0;
     keysDown.clear();
+    xrExitButtonWasDown = false;
   });
 }
 
@@ -960,6 +1040,7 @@ function animate() {
   updateGizmoDrag();
   updateGizmoPose();
   updateGizmoHover();
+  updateVrExitButton();
 
   // Generic path-length accumulation — measures how far the cube has
   // physically travelled this trial, regardless of mapping. World space

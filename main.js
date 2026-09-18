@@ -553,6 +553,24 @@ function updateControlMapping(delta) {
 // the cube, not on top of it. Change XR_SPAWN_Z to move closer/farther.
 const XR_SPAWN_Z = 1.2;
 
+function setupController(index, color) {
+  const controller = renderer.xr.getController(index);
+  controller.add(buildControllerRay(color));
+  xrRig.add(controller);
+  controller.addEventListener("selectstart", onGrabStart);
+  controller.addEventListener("selectend", onGrabEnd);
+
+  const grip = renderer.xr.getControllerGrip(index);
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.02, 12, 8),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  grip.add(marker);
+  xrRig.add(grip);
+
+  return controller;
+}
+
 function setupWebXR() {
   renderer.xr.enabled = true;
   document.body.appendChild(VRButton.createButton(renderer));
@@ -562,11 +580,9 @@ function setupWebXR() {
   scene.add(xrRig);
   xrRig.add(camera);
 
-  const controller = renderer.xr.getController(0);
-  controller.add(buildControllerRay());
-  xrRig.add(controller);
-  controller.addEventListener("selectstart", onGrabStart);
-  controller.addEventListener("selectend", onGrabEnd);
+  // 0 = red (left in most Quest profiles), 1 = blue.
+  const controller0 = setupController(0, 0xff6666);
+  const controller1 = setupController(1, 0x66aaff);
 
   renderer.xr.addEventListener("sessionstart", () => {
     xrRig.position.set(0, 0, XR_SPAWN_Z);
@@ -578,7 +594,8 @@ function setupWebXR() {
     camera.quaternion.identity();
     camera.lookAt(0, 0.5, 0);
     if (cube.parent !== scene) scene.attach(cube);
-    controller.userData.selected = null;
+    controller0.userData.selected = null;
+    controller1.userData.selected = null;
     isDragging = false;
     dx = 0;
     dy = 0;
@@ -591,25 +608,29 @@ function onGrabStart(event) {
   const controller = event.target;
   const hits = getIntersections(controller, [cube]);
   if (hits.length === 0) return;
+  if (cube.parent && cube.parent !== scene && cube.parent !== controller) {
+    cube.parent.userData.selected = null;
+  }
   controller.attach(cube);
   controller.userData.selected = cube;
 }
 
 function onGrabEnd(event) {
   const controller = event.target;
-  if (!controller.userData.selected) return;
-  scene.attach(cube);
+  if (controller.userData.selected !== cube) return;
   controller.userData.selected = null;
+  // Only release if this hand still holds it (the other hand may have stolen the grab).
+  if (cube.parent === controller) scene.attach(cube);
 }
 
-function buildControllerRay() {
+function buildControllerRay(color) {
   const geometry = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, 0, 0),
     new THREE.Vector3(0, 0, -1),
   ]);
   const line = new THREE.Line(
     geometry,
-    new THREE.LineBasicMaterial({ color: 0xffffff })
+    new THREE.LineBasicMaterial({ color })
   );
   line.name = "ray";
   line.scale.z = 1.5;

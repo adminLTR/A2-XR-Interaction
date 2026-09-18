@@ -247,7 +247,13 @@ const statusEl = document.getElementById("status");
 // ---------------------------------------------------------------------------
 
 let trialNumber = 0;
-let presentationOrderByMapping = { 1: 0, 2: 0 };
+let presentationOrderByMapping = {
+  "vr-grab": 0,
+  "vr-trackball": 0,
+  "vr-gizmo": 0,
+  "desktop-1": 0,
+  "desktop-2": 0,
+};
 let trialStartTime = performance.now();
 let pathLength = 0; // accumulated cube-position travel distance this trial
 // Placeholder — cube doesn't exist yet at module-load time (main() creates
@@ -277,6 +283,10 @@ const CSV_HEADER = [
 
 function currentMapping() {
   return mappingSelect.value;
+}
+
+function isVrGrabMapping() {
+  return currentMapping() === "vr-grab";
 }
 
 function startTrial() {
@@ -451,7 +461,7 @@ window.addEventListener("pointermove", (e) => {
 document.addEventListener("keydown", (e) => {
   trackMapping2Key(e, true);
 
-  if (e.code === CODE_SPACE && (currentMapping() === "1" || currentMapping() === "2")) {
+  if (e.code === CODE_SPACE && (currentMapping() === "desktop-1" || currentMapping() === "desktop-2")) {
     e.preventDefault();
     controlMode = controlMode === "translate" ? "rotate" : "translate";
     modeSwitches++;
@@ -462,10 +472,13 @@ document.addEventListener("keyup", (e) => {
   trackMapping2Key(e, false);
 }, true);
 
-mappingSelect.addEventListener("change", () => keysDown.clear());
+mappingSelect.addEventListener("change", () => {
+  keysDown.clear();
+  releaseVrGrab();
+});
 
 window.addEventListener("wheel", (e) => {
-  if (currentMapping() !== "1") return;
+  if (currentMapping() !== "desktop-1") return;
   const scale = 0.0005;
   dz = -e.deltaY * scale;
 });
@@ -477,7 +490,7 @@ function updateControlMapping(delta) {
 
   const mapping = currentMapping();
 
-  if (mapping === "1") {
+  if (mapping === "desktop-1") {
     const scale = 0.005;
 
     if (controlMode === "translate") {
@@ -518,7 +531,7 @@ function updateControlMapping(delta) {
         dz = 0;
       }
     }
-  } else if (mapping === "2") {
+  } else if (mapping === "desktop-2") {
     const moveSpeed = 1.2;
     const rotSpeed = 2.5;
     const moveStep = moveSpeed * delta;
@@ -552,6 +565,44 @@ function updateControlMapping(delta) {
 // controller to this rig and slide the rig back so you stand in front of
 // the cube, not on top of it. Change XR_SPAWN_Z to move closer/farther.
 const XR_SPAWN_Z = 1.2;
+
+// Direct grab (vr-grab): keep the cube parented to the scene so rotation
+// is about the cube's own origin. attach() would orbit it around the
+// controller tip instead.
+let vrGrabController = null;
+const vrGrabPrevPos = new THREE.Vector3();
+const vrGrabPrevQuat = new THREE.Quaternion();
+const _vrGrabPos = new THREE.Vector3();
+const _vrGrabQuat = new THREE.Quaternion();
+const _vrGrabDeltaPos = new THREE.Vector3();
+const _vrGrabDeltaQuat = new THREE.Quaternion();
+
+function captureVrGrabPose(controller) {
+  controller.getWorldPosition(vrGrabPrevPos);
+  controller.getWorldQuaternion(vrGrabPrevQuat);
+}
+
+function releaseVrGrab(controller) {
+  if (controller && vrGrabController !== controller) return;
+  if (vrGrabController) vrGrabController.userData.selected = null;
+  vrGrabController = null;
+}
+
+function updateVrGrab() {
+  if (!isVrGrabMapping() || !vrGrabController) return;
+
+  vrGrabController.getWorldPosition(_vrGrabPos);
+  vrGrabController.getWorldQuaternion(_vrGrabQuat);
+
+  cube.position.add(_vrGrabDeltaPos.subVectors(_vrGrabPos, vrGrabPrevPos));
+
+  // World-space controller rotation delta, applied at the cube origin.
+  _vrGrabDeltaQuat.copy(vrGrabPrevQuat).invert().premultiply(_vrGrabQuat);
+  cube.quaternion.premultiply(_vrGrabDeltaQuat);
+
+  vrGrabPrevPos.copy(_vrGrabPos);
+  vrGrabPrevQuat.copy(_vrGrabQuat);
+}
 
 function setupController(index, color) {
   const controller = renderer.xr.getController(index);
@@ -594,6 +645,7 @@ function setupWebXR() {
     camera.quaternion.identity();
     camera.lookAt(0, 0.5, 0);
     if (cube.parent !== scene) scene.attach(cube);
+    releaseVrGrab();
     controller0.userData.selected = null;
     controller1.userData.selected = null;
     isDragging = false;
@@ -605,22 +657,20 @@ function setupWebXR() {
 }
 
 function onGrabStart(event) {
+  if (!isVrGrabMapping()) return;
   const controller = event.target;
   const hits = getIntersections(controller, [cube]);
   if (hits.length === 0) return;
-  if (cube.parent && cube.parent !== scene && cube.parent !== controller) {
-    cube.parent.userData.selected = null;
+  if (vrGrabController && vrGrabController !== controller) {
+    vrGrabController.userData.selected = null;
   }
-  controller.attach(cube);
+  vrGrabController = controller;
   controller.userData.selected = cube;
+  captureVrGrabPose(controller);
 }
 
 function onGrabEnd(event) {
-  const controller = event.target;
-  if (controller.userData.selected !== cube) return;
-  controller.userData.selected = null;
-  // Only release if this hand still holds it (the other hand may have stolen the grab).
-  if (cube.parent === controller) scene.attach(cube);
+  releaseVrGrab(event.target);
 }
 
 function buildControllerRay(color) {
@@ -660,6 +710,7 @@ function animate() {
   const delta = clock.getDelta();
 
   updateControlMapping(delta);
+  updateVrGrab();
 
   // Generic path-length accumulation — measures how far the cube has
   // physically travelled this trial, regardless of mapping. World space

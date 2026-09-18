@@ -11,6 +11,7 @@
 // HUD state for a second input mode). If you do, note it in your README.
 
 import * as THREE from "three";
+import { VRButton } from "three/addons/webxr/VRButton.js";
 
 // ---------------------------------------------------------------------------
 // Module-scope state — provided
@@ -22,7 +23,7 @@ import * as THREE from "three";
 // still declared inline where they're first used.
 // ---------------------------------------------------------------------------
 
-let scene, camera, renderer, cube, target;
+let scene, camera, renderer, cube, target, xrRig;
 
 /**
  * buildScene()
@@ -119,8 +120,12 @@ function main() {
 
   window.addEventListener("resize", handleWindowResize);
 
+  setupWebXR();
+
   startTrial();
-  animate();
+  // WebXR needs setAnimationLoop, not requestAnimationFrame — three.js
+  // swaps the timing source automatically once an XR session starts.
+  renderer.setAnimationLoop(animate);
 }
 
 /**
@@ -194,9 +199,22 @@ function generateTargetPose() {
 const POSITION_TOLERANCE = 0.05;
 const ORIENTATION_TOLERANCE_DEG = 10;
 
+// World pose — while the cube is attached to a controller its local
+// position/quaternion are in controller space, so docking checks must
+// read the world transform (same values as local when parented to scene).
+const _cubeWorldPos = new THREE.Vector3();
+const _cubeWorldQuat = new THREE.Quaternion();
+
+function getCubeWorldPose() {
+  cube.getWorldPosition(_cubeWorldPos);
+  cube.getWorldQuaternion(_cubeWorldQuat);
+  return { position: _cubeWorldPos, quaternion: _cubeWorldQuat };
+}
+
 function checkTolerance() {
-  const positionError = cube.position.distanceTo(target.position);
-  const orientationErrorRad = cube.quaternion.angleTo(target.quaternion);
+  const { position, quaternion } = getCubeWorldPose();
+  const positionError = position.distanceTo(target.position);
+  const orientationErrorRad = quaternion.angleTo(target.quaternion);
   const orientationErrorDeg = THREE.MathUtils.radToDeg(orientationErrorRad);
 
   const withinTolerance =
@@ -264,7 +282,7 @@ function currentMapping() {
 function startTrial() {
   trialStartTime = performance.now();
   pathLength = 0;
-  lastCubePosition.copy(cube.position);
+  lastCubePosition.copy(getCubeWorldPose().position);
   modeSwitches = 0;
   generateTargetPose();
   trialCountEl.textContent = `Trial ${trialNumber + 1}`;
@@ -454,6 +472,9 @@ window.addEventListener("wheel", (e) => {
 
 
 function updateControlMapping(delta) {
+  // VR grab owns the cube; desktop mappings must not fight the controller.
+  if (renderer.xr.isPresenting) return;
+
   const mapping = currentMapping();
 
   if (mapping === "1") {
@@ -525,6 +546,89 @@ function updateControlMapping(delta) {
 
 // ===== END STUDENT TODO =====
 
+
+// WebXR overwrites camera.position with the headset pose at the tracking
+// origin (0, 0, 0) — the same place the cube sits. Parent camera +
+// controller to this rig and slide the rig back so you stand in front of
+// the cube, not on top of it. Change XR_SPAWN_Z to move closer/farther.
+const XR_SPAWN_Z = 1.2;
+
+function setupWebXR() {
+  renderer.xr.enabled = true;
+  document.body.appendChild(VRButton.createButton(renderer));
+
+  xrRig = new THREE.Group();
+  xrRig.name = "xrRig";
+  scene.add(xrRig);
+  xrRig.add(camera);
+
+  const controller = renderer.xr.getController(0);
+  controller.add(buildControllerRay());
+  xrRig.add(controller);
+  controller.addEventListener("selectstart", onGrabStart);
+  controller.addEventListener("selectend", onGrabEnd);
+
+  renderer.xr.addEventListener("sessionstart", () => {
+    xrRig.position.set(0, 0, XR_SPAWN_Z);
+  });
+
+  renderer.xr.addEventListener("sessionend", () => {
+    xrRig.position.set(0, 0, 0);
+    camera.position.set(0, 1.4, 4);
+    camera.quaternion.identity();
+    camera.lookAt(0, 0.5, 0);
+    if (cube.parent !== scene) scene.attach(cube);
+    controller.userData.selected = null;
+    isDragging = false;
+    dx = 0;
+    dy = 0;
+    dz = 0;
+    keysDown.clear();
+  });
+}
+
+function onGrabStart(event) {
+  const controller = event.target;
+  const hits = getIntersections(controller, [cube]);
+  if (hits.length === 0) return;
+  controller.attach(cube);
+  controller.userData.selected = cube;
+}
+
+function onGrabEnd(event) {
+  const controller = event.target;
+  if (!controller.userData.selected) return;
+  scene.attach(cube);
+  controller.userData.selected = null;
+}
+
+function buildControllerRay() {
+  const geometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, -1),
+  ]);
+  const line = new THREE.Line(
+    geometry,
+    new THREE.LineBasicMaterial({ color: 0xffffff })
+  );
+  line.name = "ray";
+  line.scale.z = 1.5;
+  return line;
+}
+
+function getIntersections(controller, objects) {
+  const tempMatrix = new THREE.Matrix4();
+  tempMatrix.identity().extractRotation(controller.matrixWorld);
+
+  const raycaster = new THREE.Raycaster();
+  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+  return raycaster.intersectObjects(objects, false);
+}
+
+// ===== END STUDENT TODO ================================================
+
 // ---------------------------------------------------------------------------
 // Render loop — provided
 // ---------------------------------------------------------------------------
@@ -532,15 +636,16 @@ function updateControlMapping(delta) {
 const clock = new THREE.Clock();
 
 function animate() {
-  requestAnimationFrame(animate);
   const delta = clock.getDelta();
 
   updateControlMapping(delta);
 
   // Generic path-length accumulation — measures how far the cube has
-  // physically travelled this trial, regardless of mapping.
-  pathLength += cube.position.distanceTo(lastCubePosition);
-  lastCubePosition.copy(cube.position);
+  // physically travelled this trial, regardless of mapping. World space
+  // so travel is correct while the cube is parented to a controller.
+  const { position: cubeWorldPos } = getCubeWorldPose();
+  pathLength += cubeWorldPos.distanceTo(lastCubePosition);
+  lastCubePosition.copy(cubeWorldPos);
 
   updateStatus();
   renderer.render(scene, camera);

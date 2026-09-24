@@ -1,0 +1,4 @@
+participant_id,mapping,trial_number,presentation_order,completion_time_s,final_position_error,final_orientation_error_deg,mode_switches,path_length
+P01,desktop-2,1,1,43.026,0.0380,8.41,3,3.7987
+P01,desktop-2,2,2,85.219,0.0292,6.54,8,2.5602
+P01,desktop-2,3,3,147.630,0.0319,6.03,13,6.8240

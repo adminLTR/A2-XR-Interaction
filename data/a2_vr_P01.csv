@@ -1,0 +1,7 @@
+participant_id,mapping,trial_number,presentation_order,completion_time_s,final_position_error,final_orientation_error_deg
+P06,vr-grab,1,1,150,0.05,14
+P06,vr-grab,2,2,69,0.014,2.5
+P06,vr-trackball,1,1,20,0.032,7.2
+P06,vr-trackball,2,2,64,0.044,7.5
+P06,vr-gizmo,1,1,107,0.02,4.4
+P06,vr-gizmo,2,2,144,0.08,6.9
